@@ -2,24 +2,24 @@ clear all
 close all
 clc
 
-% Cf = 155494.663 ;  % N / Rad
-% Cr = 155494.663 ;  % N / rad 
-% Iz = 1436.24 ; %m kgm^2
-% Lf = 1.165 ;  % m
-% Lr = 1.165 ; % m 
-% m = 1140 ; % kg
-% Vx = 18 ;  
+parameters.Cf = 155494.663 ;  % N / Rad
+parameters.Cr = 155494.663 ;  % N / rad 
+parameters.Iz = 1436.24 ; %m kgm^2
+parameters.Lf = 1.165 ;  % m
+parameters.Lr = 1.165 ; % m 
+parameters.m = 1140 ; % kg
+parameters.Vx = 30 ;  
 
 
 
 %%% Rajamani Parameters
-Cf = 80000 ;  % N / Rad
-Cr = 80000 ;  % N / rad 
-Iz = 2873 ; %m kgm^2
-Lf = 1.1 ;  % m
-Lr = 1.58 ; % m 
-m = 1573 ; % kg
-Vx = 30 ;  
+% parameters.Cf = 2 * 80000 ;  % N / Rad  % cornering stiffness of front tires
+% parameters.Cr = 2 * 80000 ;  % N / rad  % cornering stiffness of rear tires
+% parameters.Iz = 2873 ; %m kgm^2     % aw-plane rotational inertia 
+% parameters.Lf = 1.1 ;  % m          % distance from C.G. to front axle 
+% parameters.Lr = 1.58 ; % m          % distance from C.G. to rear axle 
+% parameters.m = 1573 ; % kg          % vehicle mass 
+% parameters.Vx = 18 ;  % m/sec       % longitudinal velocity
 
 % 100kph= 27.77778m/s
 % 30kph= 8.333333m/s
@@ -34,15 +34,17 @@ Nc = 3;  % Control Horizon
  
  
 A = [0 1 0 0;
-     0, -(Cf + Cr)/(m * Vx), ( Cf + Cr) / m , (- Cf * Lf + Cr * Lr) / (m * Vx) ;
+     0, -(parameters.Cf + parameters.Cr)/(parameters.m * parameters.Vx),...
+     ( parameters.Cf + parameters.Cr) / parameters.m , (- parameters.Cf * parameters.Lf + parameters.Cr * parameters.Lr) / (parameters.m * parameters.Vx) ;
      0 0 0 1;
-     0, -( Cf * Lf -  Cr * Lr)/(Iz * Vx), ( Cf * Lf - Cr * Lr)/Iz, -( Cf * Lf^2 +  Cr * Lr^2)/(Iz * Vx)];
+     0, -( parameters.Cf * parameters.Lf -  parameters.Cr * parameters.Lr)/(parameters.Iz * parameters.Vx), ...
+     ( parameters.Cf * parameters.Lf - parameters.Cr * parameters.Lr)/parameters.Iz, -( parameters.Cf * parameters.Lf^2 +  parameters.Cr * parameters.Lr^2)/(parameters.Iz * parameters.Vx)];
  
  
  B = [ 0 0 ;
-      (Cf/m), (-( Cf * Lf -  Cr * Lr)/(m * Vx)) - Vx ;
+      (parameters.Cf/parameters.m), (-( parameters.Cf * parameters.Lf -  parameters.Cr * parameters.Lr)/(parameters.m * parameters.Vx)) - parameters.Vx ;
        0 0 ;
-       (Cf * Lf) / Iz, -( Cf * Lf^2 + Cr * Lr^2)/(Iz * Vx)];
+       (parameters.Cf * parameters.Lf) / parameters.Iz, -( parameters.Cf * parameters.Lf^2 + parameters.Cr * parameters.Lr^2)/(parameters.Iz * parameters.Vx)];
 
 C = [1,0,0,0;
      0,0,1,0] ;
@@ -60,29 +62,42 @@ A = (A - B1*K) ;
 %%%%%% Parameters for sim
 rw = 0.1 ;
 ts = 0.01 ;
-K = 1/1000 ;
+% parameters.curv = 1 / 250 ; %meter
 
-N_sim = 421 ; % # of sample
+
 
 xm = [1.5; 0 ; deg2rad(-30); 0]; %initial states 
 Xf = [0;0;0;0;1.5 ; deg2rad(-30) ] ;  %% delta states
 
+% xm = [0; 0 ; 0; 0]; %initial states 
+% Xf = [0;0;0;0;0 ; 0 ] ;  %% augmented states
+
+
+
+
+file = matfile("frenet.mat") ;
+N_sim = length(file.rk) ; % # of sample
+% N_sim = 300 ;
 u = [0];
 y = [0;0];
 
 ref_signal = zeros(2,N_sim) ;
 ref_signal(1,:) = 0 * ones(N_sim,1) ;  % referenece signal
 ref_signal(2,:) = 0 * ones(N_sim,1) ;  % referenece signal
-file = matfile("frenet.mat") ;
-u2 = (Vx .* K) * ones(1,N_sim);
-%  u2 = (Vx .* file.rk);
+
+
+% u2 = (parameters.Vx .* parameters.curv) * ones(1,N_sim); % constant curvature
+u2 = (parameters.Vx .* file.rk);
+curvature = file.rk ;
 
 %%% for constraints
 u0(1) = [0];
 
-amplitude_constraint = 0.7853981634; %45 derece 
+amplitude_constraint = deg2rad(35); %30 derece 
+% amplitude_constraint = 0.7853981634; %45 derece 
 % amplitude_constraint = 1.0471975512; % 60 derece
-rate_constraint = 0.2 ;
+
+rate_constraint = deg2rad(15) ;
 
 %%%%
 [system.Ad, system.Bd, system.Cd, system.Dd] = c2dm(A,B,C,D,ts); % Model Discritization
@@ -95,7 +110,8 @@ system.Bd2 = system.Bd(:,2) ;
 
 %%% simulation
 % [y,u, deltaUs] = unconstrained_mpc_simulation(system, aug_system, xm, Xf, F, phi, phiT_Rs, Nc, Np, ref_signal,rw, N_sim,u,y, u2) ;
-[y,u, deltaUs] = constrained_mpc_simulation(system, aug_system, xm, Xf, F, phi, phiT_Rs, Nc, Np, ref_signal,rw, N_sim,u,y, u2, u0, rate_constraint, amplitude_constraint, omega) ;
+[y,u, deltaUs] = constrained_mpc_simulation(system, aug_system, xm, Xf, F, phi, phiT_Rs, Nc, Np, ref_signal,rw, N_sim,u,y, u2, u0, rate_constraint, amplitude_constraint, omega, K, parameters) ;
+
 
 %%%%%%%% PLOTTING 
 k = 0 : (N_sim -1);
@@ -137,7 +153,7 @@ legend('steering angle rate',' constraint ')
 grid on
 
 figure
-plot(k,rad2deg(u2(1,:)))
+plot(k, rad2deg(u2(1,:)))
 ylabel(' desired yaw rate, determined from R (deg / sec) ')
 grid on
 
@@ -151,14 +167,14 @@ grid on;
 xlabel('x[m]');
 ylabel('y[m]');
 legend;
-
-figure
-plot(file.s, rad2deg(file.ryaw), '-r', 'DisplayName', 'yaw');
-grid on;
-legend;
-xlabel('line length[m]');
-ylabel('yaw angle[deg]');
-
+% 
+% figure
+% plot(file.s, rad2deg(file.ryaw), '-r', 'DisplayName', 'yaw');
+% grid on;
+% legend;
+% xlabel('line length[m]');
+% ylabel('yaw angle[deg]');
+% 
 figure
 plot(file.s, file.rk, '-r', 'DisplayName', 'curvature');
 grid on;
