@@ -1,16 +1,17 @@
 import numpy as np
 import scipy
-from scipy import signal 
+from scipy import signal
+import matplotlib.pyplot as plt
 
 
-
-class mpc_controller():
-    def __init__(self):
+class mpc_controller :
+    def __init__(self, Nc, Np):
 
         self.trajectory_points = None 
         self.transform = None
         self.vehicle_state = None
-        
+        self.rw = 0.1 # input weight
+
         # vehicle parameters
 
         self.Cf = 155494.663 
@@ -22,8 +23,8 @@ class mpc_controller():
         self.Vx = 30
         self.dt = 0.01 # sample time
 
-        self.Np = 12; # Predict Horizon
-        self.Nc = 3;  # Control Horizon
+        self.Np = Np   # Predict Horizon
+        self.Nc = Nc   # Control Horizon
         
         # DYNAMIC MODEL IN TERMS OF ERROR WITH RESPECT TO ROAD
        
@@ -64,11 +65,9 @@ class mpc_controller():
         self.P = np.array([-5-3j, -5+3j , -7 , -10 ])
         self.B1 = self.B[:,0]
         self.B1 = np.reshape(self.B1,(self.nstates,1))
-        print(self.B1)
         fsf1 = signal.place_poles(self.A, self.B1, self.P,)
         K = fsf1.gain_matrix
         self.A = (self.A - self.B1 * K) # state feedback controller A
-        print(self.A)
 
         self.discrete_system = scipy.signal.cont2discrete((self.A,self.B,self.C,self.D), self.dt, method='zoh')
         
@@ -203,10 +202,88 @@ class mpc_controller():
         self.PhiT_phi = np.matmul(np.transpose(self.Phi), self.Phi)
         self.PhiT_F = np.matmul(np.transpose(self.Phi), self.F)
         self.PhiT_Omega = np.matmul(np.transpose(self.Phi), self.Omega)
-        self.PhiT_Rs = self.PhiT_F[:, -2:] 
+        self.PhiT_Rs = self.PhiT_F[:, -self.noutputs:] 
 
+    def mpc_simulation(self,N_sim, ref_signal, curvature, u0, amplitude_constraint, rate_constraint, xm , xf) :
+        
+        u2 = np.ones((1, N_sim + Nc))  * (curvature * self.Vx)
+        deltaW = np.zeros((Nc,1))
+        self.u = np.zeros_like(u2)
+        self.deltaUs = np.zeros_like(u2)
+        self.y = np.zeros((2, N_sim))
+        self.y[0,0] = xm[0,0]
+        self.y[1,0] = xm[2,0]
+        for i in range(1,N_sim - 1) :
 
+            dummy1 = (self.PhiT_phi + self.rw * np.eye((self.Nc * self.ninputs)))
+            dummy2 = np.reshape(np.matmul(self.PhiT_Rs , ref_signal[:, i]), (3, 1))
+            dummy3 = dummy2 - np.matmul(self.PhiT_F , xf)
+            
+            self.deltaU = np.matmul(np.linalg.inv(dummy1), dummy3)
+           
+            self.deltaUs[0,i] = self.deltaU[0]
+            self.u[0,i] = self.u[0, i-1] + self.deltaU[0]
+            
+            xm_old = xm
+            xm = np.matmul(self.Ad, xm)  + self.Bd1 * self.u[0,i] + self.Bd2 * u2[0,i]
+            ans1 = np.matmul(self.Cd , xm)
+
+            self.y[0,i] = ans1[0]
+            self.y[1,i] = ans1[1]
+            a = xm - xm_old
+            xf[0] = a[0]
+            xf[1] = a[1]
+            xf[2] = a[2]
+            xf[3] = a[3]
+            xf[4] = self.y[0,i]
+            xf[5] = self.y[1,i]
+            
+        
 if __name__ == '__main__':
-    controller = mpc_controller()
+
+    # Parameters for sim
+    Nc = 3
+    Np = 12
+    N_sim = 300
+    curvature = 1/ 100
+    ref_signal = np.zeros((2, N_sim)) 
+    xm = np.zeros((4, 1)) 
+    xf = np.zeros((6,1))
+    xm[0,0] = 2
+    xf[4,0] = 2
+    xm[2,0] = np.radians(-30)
+    xf[5,0] = np.radians(-30)
+    
+    u0 = [0] 
+    amplitude_constraint = np.radians(35)
+    rate_constraint = np.radians(15) 
+
+    controller = mpc_controller(Nc,Np)
     controller.generate_augmented_model()
     controller.calculate_mpc_gains()
+
+    controller.mpc_simulation(N_sim, ref_signal, curvature,u0 ,amplitude_constraint, rate_constraint, xm, xf )
+
+    plt.plot(np.reshape(controller.u,(N_sim + Nc,1)))
+    plt.ylabel('steering angle( radian )')
+    plt.xlabel(' sample ')
+    plt.grid(True)
+    plt.show()
+
+    plt.plot(np.reshape(controller.y[0,:],(N_sim,1)), label = 'system response')
+    plt.plot(ref_signal[0,:], label = 'reference signal')
+    plt.legend()
+    plt.ylabel('distance of lane center')
+    plt.xlabel(' sampling ')
+    plt.grid(True)
+    plt.show()
+
+    plt.plot(np.reshape(controller.y[1,:],(N_sim,1)), label = 'system response')
+    plt.plot(ref_signal[1,:],  label = 'reference signal' )
+    plt.legend()
+    plt.ylabel(' yaw angle respect to lane center ( radian )')
+    plt.xlabel(' sampling ')
+    plt.grid(True)
+    plt.show()
+
+
