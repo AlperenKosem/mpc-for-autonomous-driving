@@ -2,6 +2,7 @@ import numpy as np
 import scipy
 from scipy import signal
 import matplotlib.pyplot as plt
+from qpsolvers import solve_qp
 
 
 class mpc_controller :
@@ -11,6 +12,8 @@ class mpc_controller :
         self.transform = None
         self.vehicle_state = None
         self.rw = 0.1 # input weight
+        self.amplitude_constraint = None
+        self.rate_constraint = None
 
         # vehicle parameters
 
@@ -57,7 +60,7 @@ class mpc_controller :
         # A B C D Checked.
 
         self.nstates = self.A.shape[0]  # number of states
-        self.ninputs = None 
+        self.ninputs = None             # number of inputs
         self.noutputs = self.C.shape[0] # number of outputs
 
         ## Full State Feedback
@@ -203,9 +206,46 @@ class mpc_controller :
         self.PhiT_F = np.matmul(np.transpose(self.Phi), self.F)
         self.PhiT_Omega = np.matmul(np.transpose(self.Phi), self.Omega)
         self.PhiT_Rs = self.PhiT_F[:, -self.noutputs:] 
+    
+    def quad_solver(self, ref_act, Xf, deltaW) : 
+
+        ## set constraints
+        self.M = np.zeros((self.Nc * 4, self.Nc), dtype=np.double)
+        self.gamma = np.zeros((self.Nc * 4,1), dtype=np.double)
+        for i in range(0,self.Nc) :
+            for j in range(0, self.Np) :
+                if i == j :
+                    self.M[i,j] = 1
+                    self.gamma[i,] = self.rate_constraint
+                    self.M[i + self.Nc,j ] = -1
+                    self.gamma[i + self.Nc, ] = self.rate_constraint
+                if i >= j :
+                    self.M[i + 2 * self.Nc, j] = 1
+                    self.M[i + 3 * self.Nc, j] = -1
+                    self.gamma[ i + 2 * self.Nc, ] = self.amplitude_constraint - self.u0
+                    self.gamma[ i + 3 * self.Nc, ] = self.amplitude_constraint + self.u0
+        
+        E = 2 * (self.PhiT_phi + self.rw * np.eye(self.Nc))
+        Xf = np.reshape(Xf, (6,))
+        deltaW = np.reshape(deltaW, (self.Nc,))
+        Fconstraint = -2 * (np.matmul(self.PhiT_Rs , ref_act) - np.matmul(self.PhiT_F , Xf) - np.matmul(self.PhiT_Omega , deltaW ))
+        
+        self.gamma = np.reshape(self.gamma, (self.Nc * 4,))
+        Fconstraint = np.reshape(Fconstraint, (self.Nc,))
+        x = solve_qp(E, Fconstraint, self.M, self.gamma)
+        return x[0]
+        
+
+
 
     def mpc_simulation(self,N_sim, ref_signal, curvature, u0, amplitude_constraint, rate_constraint, xm , xf) :
-        
+        self.u0 =  u0
+        # self.u_act = 
+        self.amplitude_constraint = amplitude_constraint
+        self.rate_constraint = rate_constraint
+
+
+
         u2 = np.ones((1, N_sim + Nc))  * (curvature * self.Vx)
         deltaW = np.zeros((Nc,1))
         self.u = np.zeros_like(u2)
@@ -214,15 +254,12 @@ class mpc_controller :
         self.y[0,0] = xm[0,0]
         self.y[1,0] = xm[2,0]
         for i in range(1,N_sim - 1) :
-
-            dummy1 = (self.PhiT_phi + self.rw * np.eye((self.Nc * self.ninputs)))
-            dummy2 = np.reshape(np.matmul(self.PhiT_Rs , ref_signal[:, i]), (3, 1))
-            dummy3 = dummy2 - np.matmul(self.PhiT_F , xf)
             
-            self.deltaU = np.matmul(np.linalg.inv(dummy1), dummy3)
-           
-            self.deltaUs[0,i] = self.deltaU[0]
-            self.u[0,i] = self.u[0, i-1] + self.deltaU[0]
+            ref_act = ref_signal[:, i]
+            self.deltaU = self.quad_solver(ref_act, xf, deltaW)
+                       
+            self.deltaUs[0,i] = self.deltaU
+            self.u[0,i] = self.u[0, i-1] + self.deltaU
             
             xm_old = xm
             xm = np.matmul(self.Ad, xm)  + self.Bd1 * self.u[0,i] + self.Bd2 * u2[0,i]
@@ -237,20 +274,22 @@ class mpc_controller :
             xf[3] = a[3]
             xf[4] = self.y[0,i]
             xf[5] = self.y[1,i]
+            self.u0 = self.u[0,i]
             
         
 if __name__ == '__main__':
 
     # Parameters for sim
-    Nc = 3
     Np = 12
+    Nc = 3
+    
     N_sim = 300
     curvature = 1/ 100
     ref_signal = np.zeros((2, N_sim)) 
     xm = np.zeros((4, 1)) 
     xf = np.zeros((6,1))
-    xm[0,0] = 2
-    xf[4,0] = 2
+    xm[0,0] = 1.5
+    xf[4,0] = 1.5
     xm[2,0] = np.radians(-30)
     xf[5,0] = np.radians(-30)
     
@@ -263,27 +302,44 @@ if __name__ == '__main__':
     controller.calculate_mpc_gains()
 
     controller.mpc_simulation(N_sim, ref_signal, curvature,u0 ,amplitude_constraint, rate_constraint, xm, xf )
-
+    
+    ## plotting 
+    plt.figure(1)
+    len_u = len(np.reshape(controller.u,(N_sim + Nc,1)))
     plt.plot(np.reshape(controller.u,(N_sim + Nc,1)))
+    plt.plot(amplitude_constraint * np.ones((len_u,1)), 'r--')
+    plt.plot( - amplitude_constraint * np.ones((len_u,1)), 'r--')
     plt.ylabel('steering angle( radian )')
     plt.xlabel(' sample ')
     plt.grid(True)
-    plt.show()
 
+    plt.figure(2)
+    len_u = len(np.reshape(controller.deltaUs,(N_sim + Nc,1)))
+    plt.plot(np.reshape(controller.deltaUs,(N_sim + Nc,1)))
+    plt.plot(rate_constraint * np.ones((len_u,1)), 'r--')
+    plt.plot( - rate_constraint * np.ones((len_u,1)), 'r--')
+    plt.ylabel('steering angle( radian )')
+    plt.xlabel(' sample ')
+    plt.grid(True)
+    
+
+    plt.figure(3)
     plt.plot(np.reshape(controller.y[0,:],(N_sim,1)), label = 'system response')
     plt.plot(ref_signal[0,:], label = 'reference signal')
     plt.legend()
     plt.ylabel('distance of lane center')
     plt.xlabel(' sampling ')
     plt.grid(True)
-    plt.show()
+ 
 
+    plt.figure(4)   
     plt.plot(np.reshape(controller.y[1,:],(N_sim,1)), label = 'system response')
     plt.plot(ref_signal[1,:],  label = 'reference signal' )
     plt.legend()
     plt.ylabel(' yaw angle respect to lane center ( radian )')
     plt.xlabel(' sampling ')
     plt.grid(True)
+
     plt.show()
 
 
